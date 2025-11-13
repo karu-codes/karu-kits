@@ -3,13 +3,8 @@ package dbx
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
-	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/url"
-	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -33,104 +28,6 @@ type nopLogger struct{}
 
 func (nopLogger) Printf(string, ...any) {}
 
-// Config là cấu hình gốc; đa số set qua Option
-type Config struct {
-	Driver              Driver
-	DSN                 string // nếu đã có DSN đầy đủ thì chỉ cần set đây
-	AppName             string
-	ConnTimeout         time.Duration
-	MaxOpenConns        int
-	MaxIdleConns        int
-	ConnMaxLifetime     time.Duration
-	ConnMaxIdleTime     time.Duration
-	HealthCheckInterval time.Duration
-	ReadOnly            bool
-	PreferSimpleProto   bool // pgx: disable extended protocol (qua stdlib vẫn hưởng lợi)
-	EnablePgxPool       bool // nếu true và Driver=postgres, tạo thêm pgxpool song song
-	PgxPoolMinConns     int32
-	PgxPoolMaxConns     int32
-	PgxPoolMaxLifetime  time.Duration
-	PgxPoolMaxIdleTime  time.Duration
-	PgxPoolHealthCheck  time.Duration
-
-	// Replica/Multi-endpoint
-	// VD: Primary DSN + Read DSN cho read-only query (dùng database/sql)
-	ReadReplicaDSN string
-
-	// Observability
-	Logger Logger
-
-	// Retry (cho tx helper)
-	MaxRetries int
-	RetryDelay time.Duration
-
-	// MySQL options
-	MySQLParseTime bool // parseTime=true
-	MySQLLoc       *time.Location
-
-	// Postgres DSN builder fields (nếu bạn không đưa DSN sẵn)
-	PGHost     string
-	PGPort     int
-	PGUser     string
-	PGPassword string
-	PGDatabase string
-	PGSSLMode  string            // disable|require|verify-ca|verify-full
-	PGParams   map[string]string // extra params: search_path, timezone, ...
-}
-
-// Option pattern
-type Option func(*Config)
-
-func WithDriver(d Driver) Option             { return func(c *Config) { c.Driver = d } }
-func WithDSN(dsn string) Option              { return func(c *Config) { c.DSN = dsn } }
-func WithAppName(name string) Option         { return func(c *Config) { c.AppName = name } }
-func WithConnTimeout(d time.Duration) Option { return func(c *Config) { c.ConnTimeout = d } }
-func WithPool(maxOpen, maxIdle int) Option {
-	return func(c *Config) { c.MaxOpenConns, c.MaxIdleConns = maxOpen, maxIdle }
-}
-func WithConnLifetime(life, idle time.Duration) Option {
-	return func(c *Config) { c.ConnMaxLifetime, c.ConnMaxIdleTime = life, idle }
-}
-func WithHealthCheckEvery(d time.Duration) Option {
-	return func(c *Config) { c.HealthCheckInterval = d }
-}
-func WithReadOnly(ro bool) Option            { return func(c *Config) { c.ReadOnly = ro } }
-func WithPreferSimpleProtocol(b bool) Option { return func(c *Config) { c.PreferSimpleProto = b } }
-func WithLogger(l Logger) Option             { return func(c *Config) { c.Logger = l } }
-func WithRetry(max int, delay time.Duration) Option {
-	return func(c *Config) { c.MaxRetries, c.RetryDelay = max, delay }
-}
-
-// Postgres-only
-func WithPgxPool(enable bool) Option { return func(c *Config) { c.EnablePgxPool = enable } }
-func WithPgxPoolSize(min, max int32) Option {
-	return func(c *Config) { c.PgxPoolMinConns, c.PgxPoolMaxConns = min, max }
-}
-func WithPgxPoolLifetime(life, idle, health time.Duration) Option {
-	return func(c *Config) { c.PgxPoolMaxLifetime, c.PgxPoolMaxIdleTime, c.PgxPoolHealthCheck = life, idle, health }
-}
-func WithPGHostPort(host string, port int) Option {
-	return func(c *Config) { c.PGHost, c.PGPort = host, port }
-}
-func WithPGAuth(user, pass string) Option {
-	return func(c *Config) { c.PGUser, c.PGPassword = user, pass }
-}
-func WithPGDB(db string) Option           { return func(c *Config) { c.PGDatabase = db } }
-func WithPGSSLMode(sslmode string) Option { return func(c *Config) { c.PGSSLMode = sslmode } }
-func WithPGParam(k, v string) Option {
-	return func(c *Config) {
-		if c.PGParams == nil {
-			c.PGParams = map[string]string{}
-		}
-		c.PGParams[k] = v
-	}
-}
-func WithReadReplicaDSN(dsn string) Option { return func(c *Config) { c.ReadReplicaDSN = dsn } }
-
-// MySQL-only
-func WithMySQLParseTime(b bool) Option            { return func(c *Config) { c.MySQLParseTime = b } }
-func WithMySQLLocation(loc *time.Location) Option { return func(c *Config) { c.MySQLLoc = loc } }
-
 // DB là handler chính dùng được cho sqlc (qua stdlib)
 type DB struct {
 	std     *sql.DB
@@ -150,22 +47,7 @@ func (d *DB) PgxPool() *pgxpool.Pool { return d.pgxPool }
 
 // Open khởi tạo DB
 func Open(ctx context.Context, opts ...Option) (*DB, error) {
-	cfg := Config{
-		Driver:              DriverPostgres,
-		AppName:             "dbx",
-		ConnTimeout:         5 * time.Second,
-		MaxOpenConns:        20,
-		MaxIdleConns:        10,
-		ConnMaxLifetime:     30 * time.Minute,
-		ConnMaxIdleTime:     10 * time.Minute,
-		HealthCheckInterval: 0,
-		ReadOnly:            false,
-		PreferSimpleProto:   false,
-		Logger:              nopLogger{},
-		MaxRetries:          1,
-		RetryDelay:          150 * time.Millisecond,
-		PgxPoolMaxConns:     20,
-	}
+	cfg := defaultConfig()
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -184,14 +66,14 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 			err = fmt.Errorf("unsupported driver: %s", cfg.Driver)
 		}
 		if err != nil {
-			return nil, err
+			return nil, wrapDBError(err, "build DSN")
 		}
 	}
 
 	// database/sql open
 	std, err := sql.Open(string(cfg.Driver), cfg.DSN)
 	if err != nil {
-		return nil, err
+		return nil, wrapDBError(err, "open database connection")
 	}
 	applyPool(std, cfg)
 
@@ -199,7 +81,7 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 	defer cancel()
 	if err := std.PingContext(openCtx); err != nil {
 		_ = std.Close()
-		return nil, fmt.Errorf("ping std db failed: %w", err)
+		return nil, wrapDBError(err, "ping primary database")
 	}
 
 	var roStd *sql.DB
@@ -207,13 +89,13 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 		roStd, err = sql.Open(string(cfg.Driver), cfg.ReadReplicaDSN)
 		if err != nil {
 			_ = std.Close()
-			return nil, err
+			return nil, wrapDBError(err, "open read replica connection")
 		}
 		applyPool(roStd, cfg)
 		if err := roStd.PingContext(openCtx); err != nil {
 			_ = roStd.Close()
 			_ = std.Close()
-			return nil, fmt.Errorf("ping read-replica failed: %w", err)
+			return nil, wrapDBError(err, "ping read replica database")
 		}
 	}
 
@@ -225,7 +107,7 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 			if roStd != nil {
 				_ = roStd.Close()
 			}
-			return nil, fmt.Errorf("pgxpool parse: %w", err)
+			return nil, wrapDBError(err, "parse pgxpool config")
 		}
 		if cfg.PgxPoolMinConns > 0 {
 			pcfg.MinConns = cfg.PgxPoolMinConns
@@ -251,7 +133,7 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 			if roStd != nil {
 				_ = roStd.Close()
 			}
-			return nil, fmt.Errorf("pgxpool open: %w", err)
+			return nil, wrapDBError(err, "create pgxpool")
 		}
 		if err := pgpool.Ping(ctx); err != nil {
 			pgpool.Close()
@@ -259,7 +141,7 @@ func Open(ctx context.Context, opts ...Option) (*DB, error) {
 			if roStd != nil {
 				_ = roStd.Close()
 			}
-			return nil, fmt.Errorf("pgxpool ping: %w", err)
+			return nil, wrapDBError(err, "ping pgxpool")
 		}
 	}
 
@@ -343,13 +225,23 @@ func (d *DB) backgroundHealth(ctx context.Context, every time.Duration) {
 	}
 }
 
-// Exec/Query shims nếu bạn muốn wrap để log/tracing (tuỳ chọn)
+// Exec/Query methods with error wrapping
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return d.std.ExecContext(ctx, query, args...)
+	result, err := d.std.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, wrapDBError(err, "exec query")
+	}
+	return result, nil
 }
+
 func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return d.std.QueryContext(ctx, query, args...)
+	rows, err := d.std.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, wrapDBError(err, "query")
+	}
+	return rows, nil
 }
+
 func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return d.std.QueryRowContext(ctx, query, args...)
 }
@@ -366,43 +258,25 @@ type TxOptions struct {
 }
 
 func (d *DB) WithTx(ctx context.Context, fn TxFunc, opt *TxOptions) error {
-	maxRetries := d.cfg.MaxRetries
-	delay := d.cfg.RetryDelay
-	if opt != nil {
-		if opt.MaxRetries > 0 {
-			maxRetries = opt.MaxRetries
-		}
-		if opt.RetryDelay > 0 {
-			delay = opt.RetryDelay
-		}
-	}
-
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	return retryForTransaction(ctx, d.cfg, func() error {
 		tx, err := d.std.BeginTx(ctx, optSafe(opt))
 		if err != nil {
-			return err
+			return wrapDBError(err, "begin transaction")
 		}
+
+		// Execute function
 		if err := fn(ctx, tx); err != nil {
 			_ = tx.Rollback()
-			lastErr = err
-			if isRetryableErr(err) && attempt < maxRetries {
-				time.Sleep(delay)
-				continue
-			}
 			return err
 		}
+
+		// Commit transaction
 		if err := tx.Commit(); err != nil {
-			lastErr = err
-			if isRetryableErr(err) && attempt < maxRetries {
-				time.Sleep(delay)
-				continue
-			}
-			return err
+			return wrapDBError(err, "commit transaction")
 		}
+
 		return nil
-	}
-	return lastErr
+	})
 }
 
 func optSafe(opt *TxOptions) *sql.TxOptions {
@@ -411,116 +285,6 @@ func optSafe(opt *TxOptions) *sql.TxOptions {
 	}
 	return opt.Options
 }
-
-func isRetryableErr(err error) bool {
-	// đơn giản: network transient/ serialization
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Temporary() {
-		return true
-	}
-	// Postgres serialization failure codes thường là 40001; ở đây demo đơn giản
-	if strings.Contains(err.Error(), "serialization") || strings.Contains(err.Error(), "deadlock") {
-		return true
-	}
-	return false
-}
-
-// ---------- DSN Builders ----------
-
-// buildPostgresDSN tạo DSN cho pgx stdlib.
-// Mặc định: scheme "postgres" dùng cho pgx stdlib ("github.com/jackc/pgx/v5/stdlib").
-func buildPostgresDSN(cfg Config) (string, error) {
-	if cfg.PGHost == "" {
-		cfg.PGHost = "127.0.0.1"
-	}
-	if cfg.PGPort == 0 {
-		cfg.PGPort = 5432
-	}
-	if cfg.PGSSLMode == "" {
-		cfg.PGSSLMode = "disable"
-	}
-
-	u := &url.URL{
-		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", cfg.PGHost, cfg.PGPort),
-		Path:   "/" + cfg.PGDatabase,
-	}
-	if cfg.PGUser != "" {
-		if cfg.PGPassword != "" {
-			u.User = url.UserPassword(cfg.PGUser, cfg.PGPassword)
-		} else {
-			u.User = url.User(cfg.PGUser)
-		}
-	}
-	q := u.Query()
-	q.Set("sslmode", cfg.PGSSLMode)
-	if cfg.AppName != "" {
-		q.Set("application_name", cfg.AppName)
-	}
-	if cfg.PreferSimpleProto {
-		q.Set("prefer_simple_protocol", "true")
-	}
-	for k, v := range cfg.PGParams {
-		q.Set(k, v)
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
-}
-
-// buildMySQLDSN trả về: user:pass@tcp(host:port)/db?parseTime=true&loc=...
-func buildMySQLDSN(cfg Config) (string, error) {
-	host := "127.0.0.1"
-	port := 3306
-	user := "root"
-	db := ""
-	pass := ""
-	if cfg.PGHost != "" {
-		host = cfg.PGHost
-	} // tái dụng PGHost/PGPort để đơn giản hoá input
-	if cfg.PGPort != 0 {
-		port = cfg.PGPort
-	}
-	if cfg.PGUser != "" {
-		user = cfg.PGUser
-	}
-	if cfg.PGPassword != "" {
-		pass = cfg.PGPassword
-	}
-	if cfg.PGDatabase != "" {
-		db = cfg.PGDatabase
-	}
-
-	addr := fmt.Sprintf("tcp(%s:%d)", host, port)
-	qs := url.Values{}
-	if cfg.MySQLParseTime {
-		qs.Set("parseTime", "true")
-	}
-	if cfg.MySQLLoc != nil {
-		qs.Set("loc", cfg.MySQLLoc.String())
-	}
-	if cfg.AppName != "" {
-		qs.Set("application_name", cfg.AppName) // nhiều server bỏ qua; để minh họa
-	}
-	dsn := fmt.Sprintf("%s:%s@%s/%s", user, pass, addr, db)
-	if enc := qs.Encode(); enc != "" {
-		dsn += "?" + enc
-	}
-	return dsn, nil
-}
-
-// ---------- Helpers cho sqlc ----------
-
-// SQLCx trả về interface cơ bản tương thích sqlc (database/sql):
-// sqlc thường cần *sql.DB | *sql.Tx | interface có ExecContext/QueryContext/QueryRowContext
-type SQLCx interface {
-	driver.Conn // not strictly needed, but kept minimal
-}
-
-// Tuy nhiên, thực tế với sqlc, bạn chỉ cần *sql.DB hoặc *sql.Tx.
-// Gợi ý: dùng db.StdDB() khi wire vào sqlc-generated Querier.
 
 // ---------- Ví dụ sử dụng ----------
 //
