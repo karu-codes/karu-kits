@@ -1,3 +1,50 @@
+// Package khasher provides a flexible password hashing library with support
+// for multiple algorithms including Argon2id and bcrypt.
+//
+// Features:
+//   - Multiple algorithm support via a pluggable strategy pattern
+//   - Automatic hash format detection for comparison
+//   - Secure defaults (Argon2id with OWASP-recommended parameters)
+//   - Context-aware operations for cancellation and timeouts
+//   - Comprehensive input validation
+//
+// Basic usage:
+//
+//	h, err := khasher.New(khasher.Config{})
+//	if err != nil {
+//	    return err
+//	}
+//
+//	// Hash a password using the default algorithm (Argon2id)
+//	hash, err := h.Hash(ctx, "my-password")
+//	if err != nil {
+//	    return err
+//	}
+//
+//	// Compare a password against a stored hash
+//	if err := h.Compare(ctx, hash, "my-password"); err != nil {
+//	    if errors.Is(err, khasher.ErrPasswordMismatch) {
+//	        // Password doesn't match
+//	    }
+//	    return err
+//	}
+//
+// Custom configuration:
+//
+//	h, err := khasher.New(khasher.Config{
+//	    Default: khasher.AlgorithmArgon2id,
+//	    Argon2: khasher.Argon2Config{
+//	        Time:        3,
+//	        Memory:      64 * 1024, // 64 MiB
+//	        Parallelism: 2,
+//	        KeyLength:   32,
+//	        SaltLength:  16,
+//	    },
+//	})
+//
+// The Compare method automatically detects the hash format, making it easy
+// to migrate between algorithms over time. Simply hash new passwords with
+// a different algorithm while still being able to verify old hashes.
 package khasher
 
 import (
@@ -25,6 +72,10 @@ var (
 	ErrUnknownHashFormat = errors.New("khasher: unknown hash format")
 	// ErrPasswordMismatch indicates that the provided password does not match the hashed value.
 	ErrPasswordMismatch = errors.New("khasher: password mismatch")
+	// ErrPasswordEmpty indicates that the password is empty.
+	ErrPasswordEmpty = errors.New("khasher: password cannot be empty")
+	// ErrPasswordTooLong indicates that the password exceeds the maximum length.
+	ErrPasswordTooLong = errors.New("khasher: password too long (max 72 bytes)")
 )
 
 // Config drives the construction of a Hasher.
@@ -73,11 +124,17 @@ func New(cfg Config) (*Hasher, error) {
 
 // Hash produces a password hash using the default algorithm.
 func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
+	if err := validatePassword(password); err != nil {
+		return "", err
+	}
 	return h.HashWith(ctx, h.defaultAlg, password)
 }
 
 // HashWith produces a password hash using a specific algorithm.
 func (h *Hasher) HashWith(ctx context.Context, alg Algorithm, password string) (string, error) {
+	if err := validatePassword(password); err != nil {
+		return "", err
+	}
 	strat, ok := h.strategies[alg]
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedAlgorithm, alg)
@@ -145,4 +202,15 @@ type strategy interface {
 	hash(context.Context, string) (string, error)
 	compare(context.Context, string, string) error
 	canHandle(string) bool
+}
+
+func validatePassword(password string) error {
+	if password == "" {
+		return ErrPasswordEmpty
+	}
+	// bcrypt has a limit of 72 bytes, so we enforce this for all algorithms
+	if len(password) > 72 {
+		return ErrPasswordTooLong
+	}
+	return nil
 }

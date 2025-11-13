@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/karu-codes/karu-kits/khash/khasher"
+	"github.com/karu-codes/karu-kits/khasher"
 )
 
 func ExampleHasher() {

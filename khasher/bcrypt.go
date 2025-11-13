@@ -31,7 +31,11 @@ func newBcryptStrategy(cfg BcryptConfig) (strategy, error) {
 	return &bcryptStrategy{cost: cfg.Cost}, nil
 }
 
-func (s *bcryptStrategy) hash(_ context.Context, password string) (string, error) {
+func (s *bcryptStrategy) hash(ctx context.Context, password string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), s.cost)
 	if err != nil {
 		return "", fmt.Errorf("khasher: bcrypt hash: %w", err)
@@ -39,7 +43,11 @@ func (s *bcryptStrategy) hash(_ context.Context, password string) (string, error
 	return string(hashed), nil
 }
 
-func (s *bcryptStrategy) compare(_ context.Context, hashed, password string) error {
+func (s *bcryptStrategy) compare(ctx context.Context, hashed, password string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(password)); err != nil {
 		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
 			return ErrPasswordMismatch
