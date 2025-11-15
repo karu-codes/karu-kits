@@ -77,21 +77,16 @@ func NewPostgres(ctx context.Context, config *Config) (*PostgresDB, error) {
 		}
 	}
 
-	// Create connection pool with timeout
-	connectCtx := ctx
-	if config.ConnectTimeout > 0 {
-		var cancel context.CancelFunc
-		connectCtx, cancel = context.WithTimeout(ctx, config.ConnectTimeout)
-		defer cancel()
-	}
-
-	pool, err := pgxpool.NewWithConfig(connectCtx, poolConfig)
+	// Create connection pool
+	// Note: ConnectTimeout is already configured in poolConfig.ConnConfig.ConnectTimeout above,
+	// which applies to each connection attempt including initial pool creation
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, WrapError(err, "failed to create PostgreSQL connection pool")
 	}
 
 	// Verify connection
-	if err := pool.Ping(connectCtx); err != nil {
+	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, WrapError(err, "failed to ping PostgreSQL database")
 	}
@@ -221,9 +216,10 @@ func (db *PostgresDB) Query(ctx context.Context, query string, args ...interface
 }
 
 // QueryRow executes a query that is expected to return at most one row.
+// Note: Metrics are not recorded for QueryRow since the actual query execution
+// happens lazily when Scan() is called, making it impossible to accurately
+// measure duration or capture errors at this point.
 func (db *PostgresDB) QueryRow(ctx context.Context, query string, args ...interface{}) Row {
-	start := time.Now()
-
 	if db.config.LogQueries && db.logger != nil {
 		db.logger.Debug("executing query row",
 			slog.String("query", SanitizeQuery(query)),
@@ -238,12 +234,6 @@ func (db *PostgresDB) QueryRow(ctx context.Context, query string, args ...interf
 	} else {
 		sqlRow := db.stdDB.QueryRowContext(ctx, query, args...)
 		row = &sqlRowAdapter{row: sqlRow}
-	}
-
-	duration := time.Since(start)
-
-	if db.metrics != nil {
-		db.metrics.RecordQuery(ctx, SanitizeQuery(query), duration, nil)
 	}
 
 	return row
@@ -289,21 +279,58 @@ func (db *PostgresDB) Exec(ctx context.Context, query string, args ...interface{
 	return result, nil
 }
 
-// Begin starts a new transaction.
+// Begin starts a new transaction with default isolation level.
 func (db *PostgresDB) Begin(ctx context.Context) (Tx, error) {
+	return db.BeginTx(ctx, nil)
+}
+
+// BeginTx starts a new transaction with custom options.
+func (db *PostgresDB) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
 	if db.pool != nil {
-		tx, err := db.pool.Begin(ctx)
+		// For pgxpool, convert sql.TxOptions to pgx.TxOptions
+		pgxOpts := pgx.TxOptions{}
+		if opts != nil {
+			pgxOpts.IsoLevel = convertIsolationLevel(opts.Isolation)
+			pgxOpts.AccessMode = convertAccessMode(opts.ReadOnly)
+		}
+
+		tx, err := db.pool.BeginTx(ctx, pgxOpts)
 		if err != nil {
 			return nil, WrapError(err, "failed to begin transaction")
 		}
 		return &pgxTxAdapter{tx: tx, logger: db.logger, config: db.config}, nil
 	}
 
-	tx, err := db.stdDB.BeginTx(ctx, nil)
+	// For database/sql, use TxOptions directly
+	tx, err := db.stdDB.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, WrapError(err, "failed to begin transaction")
 	}
 	return &sqlTxAdapter{tx: tx, logger: db.logger, config: db.config}, nil
+}
+
+// convertIsolationLevel converts sql.IsolationLevel to pgx transaction isolation level.
+func convertIsolationLevel(level sql.IsolationLevel) pgx.TxIsoLevel {
+	switch level {
+	case sql.LevelReadUncommitted:
+		return pgx.ReadUncommitted
+	case sql.LevelReadCommitted:
+		return pgx.ReadCommitted
+	case sql.LevelRepeatableRead:
+		return pgx.RepeatableRead
+	case sql.LevelSerializable:
+		return pgx.Serializable
+	default:
+		return "" // Use database default
+	}
+}
+
+// convertAccessMode converts read-only flag to pgx access mode.
+func convertAccessMode(readOnly bool) pgx.TxAccessMode {
+	if readOnly {
+		return pgx.ReadOnly
+	}
+	return pgx.ReadWrite
 }
 
 // WithTransaction executes a function within a transaction with retry logic.
@@ -390,6 +417,11 @@ func (db *PostgresDB) Stats() PoolStats {
 	}
 
 	// For database/sql
+	if db.stdDB == nil {
+		// Defensive: should not happen in normal operation
+		return PoolStats{}
+	}
+
 	stat := db.stdDB.Stats()
 	return PoolStats{
 		AcquiredConns: int32(stat.InUse),
@@ -469,6 +501,15 @@ func (db *PostgresDB) startHealthChecks() {
 	db.healthTicker = ticker
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if db.logger != nil {
+					db.logger.Error("health check goroutine panic recovered",
+						slog.Any("panic", r))
+				}
+			}
+		}()
+
 		for {
 			select {
 			case <-ticker.C:
@@ -647,8 +688,12 @@ func (r *pgxRowAdapter) Scan(dest ...interface{}) error {
 }
 
 func (r *pgxCommandTagAdapter) LastInsertId() (int64, error) {
-	// PostgreSQL doesn't support LastInsertId, use RETURNING clause instead
-	return 0, nil
+	// PostgreSQL doesn't support LastInsertId in the same way as MySQL.
+	// Use RETURNING clause instead: INSERT INTO table (...) VALUES (...) RETURNING id
+	return 0, &DatabaseError{
+		Code:    CodeInvalidArgument,
+		Message: "LastInsertId is not supported for PostgreSQL; use RETURNING clause instead",
+	}
 }
 
 func (r *pgxCommandTagAdapter) RowsAffected() (int64, error) {
