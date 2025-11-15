@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	_ "github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -203,7 +203,7 @@ type sqlResultAdapter struct {
 
 // pgxCommandTagAdapter adapts pgconn.CommandTag to the Result interface.
 type pgxCommandTagAdapter struct {
-	tag pgx.CommandTag
+	tag pgconn.CommandTag
 }
 
 // Ensure interfaces are implemented at compile time.

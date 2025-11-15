@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -45,6 +46,9 @@ type HealthChecker struct {
 
 	// Cache settings
 	cacheDuration time.Duration
+
+	// Mutex protects cache fields from concurrent access
+	mu            sync.RWMutex
 	lastCheck     *HealthCheck
 	lastCheckTime time.Time
 }
@@ -66,11 +70,16 @@ func (h *HealthChecker) WithCacheDuration(d time.Duration) *HealthChecker {
 // Check performs a basic health check (liveness).
 // Results are cached for the configured cache duration.
 func (h *HealthChecker) Check(ctx context.Context) *HealthCheck {
-	// Return cached result if still valid
+	// Check cache with read lock first
+	h.mu.RLock()
 	if h.lastCheck != nil && time.Since(h.lastCheckTime) < h.cacheDuration {
-		return h.lastCheck
+		cachedCheck := h.lastCheck
+		h.mu.RUnlock()
+		return cachedCheck
 	}
+	h.mu.RUnlock()
 
+	// Perform health check
 	start := time.Now()
 	err := h.db.Health(ctx)
 	duration := time.Since(start)
@@ -98,9 +107,11 @@ func (h *HealthChecker) Check(ctx context.Context) *HealthCheck {
 		"max_conns":      stats.MaxConns,
 	}
 
-	// Cache the result
+	// Cache the result with write lock
+	h.mu.Lock()
 	h.lastCheck = check
 	h.lastCheckTime = start
+	h.mu.Unlock()
 
 	return check
 }
@@ -323,15 +334,15 @@ func CheckTableExists(tableName string) HealthCheckFunc {
 
 		switch db.Driver() {
 		case DriverPostgres:
-			query = fmt.Sprintf("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '%s')", tableName)
+			query = "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
 		case DriverMySQL:
-			query = fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '%s')", tableName)
+			query = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = ?)"
 		default:
 			return fmt.Errorf("unsupported driver: %s", db.Driver())
 		}
 
 		var exists bool
-		row := db.QueryRow(ctx, query)
+		row := db.QueryRow(ctx, query, tableName)
 		if err := row.Scan(&exists); err != nil {
 			return fmt.Errorf("failed to check table existence: %w", err)
 		}

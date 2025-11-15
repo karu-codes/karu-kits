@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"time"
 )
 
@@ -86,11 +87,9 @@ func calculateBackoff(initialBackoff time.Duration, attempt int, maxBackoff time
 }
 
 // randomFloat returns a pseudo-random float64 in [0.0, 1.0).
-// Using a simple time-based approach to avoid importing crypto/rand.
+// Uses math/rand/v2 which provides better randomness and performance.
 func randomFloat() float64 {
-	// Use nanosecond timestamp as pseudo-random source
-	ns := time.Now().UnixNano()
-	return float64(ns%1000) / 1000.0
+	return rand.Float64()
 }
 
 // TxFunc is a function that executes within a transaction.
@@ -120,10 +119,16 @@ func DefaultTxOptions() *TxOptions {
 
 // WithTransactionOptions executes a function within a transaction with custom options.
 func WithTransactionOptions(ctx context.Context, db Database, opts *TxOptions, fn TxFunc) error {
-	// Create a temporary config with overridden retry settings if specified
-	config := db.(*PostgresDB).config
-	if mysqlDB, ok := db.(*MySQLDB); ok {
+	// Extract config from database implementation
+	var config *Config
+
+	// Use type assertion with safety check
+	if pgDB, ok := db.(*PostgresDB); ok {
+		config = pgDB.config
+	} else if mysqlDB, ok := db.(*MySQLDB); ok {
 		config = mysqlDB.config
+	} else {
+		return fmt.Errorf("unsupported database type")
 	}
 
 	// Override retry attempts if specified
@@ -175,7 +180,12 @@ type savepointTx struct {
 }
 
 // Savepoint creates a savepoint with the given name.
+// Note: Savepoint names cannot be parameterized in SQL, so we validate the name
+// to prevent SQL injection.
 func (tx *savepointTx) Savepoint(ctx context.Context, name string) error {
+	if err := validateSavepointName(name); err != nil {
+		return err
+	}
 	query := "SAVEPOINT " + name
 	_, err := tx.Exec(ctx, query)
 	return err
@@ -183,6 +193,9 @@ func (tx *savepointTx) Savepoint(ctx context.Context, name string) error {
 
 // RollbackToSavepoint rolls back to the specified savepoint.
 func (tx *savepointTx) RollbackToSavepoint(ctx context.Context, name string) error {
+	if err := validateSavepointName(name); err != nil {
+		return err
+	}
 	query := "ROLLBACK TO SAVEPOINT " + name
 	_, err := tx.Exec(ctx, query)
 	return err
@@ -190,9 +203,37 @@ func (tx *savepointTx) RollbackToSavepoint(ctx context.Context, name string) err
 
 // ReleaseSavepoint releases the specified savepoint.
 func (tx *savepointTx) ReleaseSavepoint(ctx context.Context, name string) error {
+	if err := validateSavepointName(name); err != nil {
+		return err
+	}
 	query := "RELEASE SAVEPOINT " + name
 	_, err := tx.Exec(ctx, query)
 	return err
+}
+
+// validateSavepointName validates that a savepoint name is safe to use in SQL.
+// Savepoint names must start with a letter or underscore and contain only
+// alphanumeric characters and underscores.
+func validateSavepointName(name string) error {
+	if name == "" {
+		return fmt.Errorf("savepoint name cannot be empty")
+	}
+
+	// Check first character
+	first := name[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+		return fmt.Errorf("savepoint name must start with a letter or underscore")
+	}
+
+	// Check remaining characters
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return fmt.Errorf("savepoint name can only contain alphanumeric characters and underscores")
+		}
+	}
+
+	return nil
 }
 
 // WithSavepoint wraps a Tx with savepoint support.

@@ -387,7 +387,7 @@ func buildMySQLDSN(config *Config) (string, error) {
 	params.Add("collation", "utf8mb4_unicode_ci")
 
 	// SQL mode for strict behavior
-	params.Add("sql_mode", "'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
+	params.Add("sql_mode", "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION")
 
 	// Interpolate parameters (better performance with prepared statements disabled)
 	params.Add("interpolateParams", "true")

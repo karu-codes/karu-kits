@@ -2,6 +2,8 @@ package kdbx
 
 import (
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -309,38 +311,48 @@ func (c *Config) MaskedURL() string {
 }
 
 // maskPassword masks the password in a database URL.
-func maskPassword(url string) string {
-	// Simple masking: find password between : and @ or between : and /
-	// postgresql://user:PASSWORD@host:5432/db -> postgresql://user:***@host:5432/db
-	// user:PASSWORD@tcp(host:3306)/db -> user:***@tcp(host:3306)/db
-
-	masked := ""
-	inPassword := false
-
-	for i := 0; i < len(url); i++ {
-		if url[i] == ':' && i+1 < len(url) && !inPassword {
-			// Check if this is a password separator (followed by something other than //)
-			if i+2 < len(url) && url[i+1:i+2] != "/" {
-				inPassword = true
-				masked += ":"
-				continue
-			}
+// Supports both PostgreSQL (postgresql://user:pass@host/db) and MySQL (user:pass@tcp(host)/db) formats.
+func maskPassword(dbURL string) string {
+	// Try PostgreSQL format first (with scheme)
+	if strings.Contains(dbURL, "://") {
+		parsed, err := url.Parse(dbURL)
+		if err != nil {
+			// Fallback to simple masking if parsing fails
+			return maskPasswordSimple(dbURL)
 		}
 
-		if inPassword && (url[i] == '@' || url[i] == '/') {
-			masked += "***" + string(url[i])
-			inPassword = false
-			continue
+		if parsed.User != nil {
+			// Replace password with ***
+			username := parsed.User.Username()
+			parsed.User = url.UserPassword(username, "***")
 		}
 
-		if !inPassword {
-			masked += string(url[i])
-		}
+		return parsed.String()
 	}
 
-	if inPassword {
-		masked += "***"
+	// MySQL format without scheme (user:pass@tcp(host)/db)
+	return maskPasswordSimple(dbURL)
+}
+
+// maskPasswordSimple is a fallback method for MySQL-style DSNs without schemes.
+func maskPasswordSimple(dbURL string) string {
+	// Find the @ symbol which marks the end of credentials
+	atIndex := strings.Index(dbURL, "@")
+	if atIndex == -1 {
+		// No credentials in the URL
+		return dbURL
 	}
 
-	return masked
+	// Find the : that separates username and password
+	credentials := dbURL[:atIndex]
+	colonIndex := strings.Index(credentials, ":")
+	if colonIndex == -1 {
+		// No password in credentials
+		return dbURL
+	}
+
+	// Build masked URL
+	username := credentials[:colonIndex]
+	rest := dbURL[atIndex:]
+	return username + ":***" + rest
 }

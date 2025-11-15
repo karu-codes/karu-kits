@@ -117,8 +117,12 @@ type InMemoryMetricsCollector struct {
 	poolStatsTime time.Time
 
 	// Keep track of slow queries
-	slowQueries     []SlowQuery
+	slowQueries        []SlowQuery
 	slowQueryThreshold time.Duration
+
+	// Memory limits
+	maxDurationSamples int // Maximum number of duration samples to keep
+	maxSlowQueries     int // Maximum number of slow queries to keep
 }
 
 // SlowQuery represents a query that exceeded the slow query threshold.
@@ -130,6 +134,8 @@ type SlowQuery struct {
 }
 
 // NewInMemoryMetricsCollector creates a new in-memory metrics collector.
+// The slowQueryThreshold parameter sets the threshold for recording slow queries.
+// Memory limits are set to reasonable defaults: 10000 duration samples and 1000 slow queries.
 func NewInMemoryMetricsCollector(slowQueryThreshold time.Duration) *InMemoryMetricsCollector {
 	return &InMemoryMetricsCollector{
 		queryDurations:     make([]time.Duration, 0),
@@ -137,7 +143,25 @@ func NewInMemoryMetricsCollector(slowQueryThreshold time.Duration) *InMemoryMetr
 		txDurations:        make([]time.Duration, 0),
 		slowQueries:        make([]SlowQuery, 0),
 		slowQueryThreshold: slowQueryThreshold,
+		maxDurationSamples: 10000, // Keep last 10k samples
+		maxSlowQueries:     1000,  // Keep last 1k slow queries
 	}
+}
+
+// WithMaxDurationSamples sets the maximum number of duration samples to keep.
+func (m *InMemoryMetricsCollector) WithMaxDurationSamples(max int) *InMemoryMetricsCollector {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxDurationSamples = max
+	return m
+}
+
+// WithMaxSlowQueries sets the maximum number of slow queries to keep.
+func (m *InMemoryMetricsCollector) WithMaxSlowQueries(max int) *InMemoryMetricsCollector {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxSlowQueries = max
+	return m
 }
 
 func (m *InMemoryMetricsCollector) RecordQuery(ctx context.Context, query string, duration time.Duration, err error) {
@@ -146,6 +170,13 @@ func (m *InMemoryMetricsCollector) RecordQuery(ctx context.Context, query string
 
 	m.queryCount++
 	m.queryDurations = append(m.queryDurations, duration)
+
+	// Enforce memory limit for duration samples (keep most recent)
+	if len(m.queryDurations) > m.maxDurationSamples {
+		// Remove oldest 10% when limit is reached
+		removeCount := m.maxDurationSamples / 10
+		m.queryDurations = m.queryDurations[removeCount:]
+	}
 
 	if err != nil {
 		m.queryErrorCount++
@@ -159,6 +190,13 @@ func (m *InMemoryMetricsCollector) RecordQuery(ctx context.Context, query string
 			Timestamp: time.Now(),
 			Error:     err,
 		})
+
+		// Enforce memory limit for slow queries (keep most recent)
+		if len(m.slowQueries) > m.maxSlowQueries {
+			// Remove oldest 10% when limit is reached
+			removeCount := m.maxSlowQueries / 10
+			m.slowQueries = m.slowQueries[removeCount:]
+		}
 	}
 }
 
@@ -168,6 +206,13 @@ func (m *InMemoryMetricsCollector) RecordExec(ctx context.Context, query string,
 
 	m.execCount++
 	m.execDurations = append(m.execDurations, duration)
+
+	// Enforce memory limit for duration samples (keep most recent)
+	if len(m.execDurations) > m.maxDurationSamples {
+		// Remove oldest 10% when limit is reached
+		removeCount := m.maxDurationSamples / 10
+		m.execDurations = m.execDurations[removeCount:]
+	}
 
 	if err != nil {
 		m.execErrorCount++
@@ -181,6 +226,13 @@ func (m *InMemoryMetricsCollector) RecordExec(ctx context.Context, query string,
 			Timestamp: time.Now(),
 			Error:     err,
 		})
+
+		// Enforce memory limit for slow queries (keep most recent)
+		if len(m.slowQueries) > m.maxSlowQueries {
+			// Remove oldest 10% when limit is reached
+			removeCount := m.maxSlowQueries / 10
+			m.slowQueries = m.slowQueries[removeCount:]
+		}
 	}
 }
 
@@ -190,6 +242,13 @@ func (m *InMemoryMetricsCollector) RecordTransaction(ctx context.Context, durati
 
 	m.txCount++
 	m.txDurations = append(m.txDurations, duration)
+
+	// Enforce memory limit for duration samples (keep most recent)
+	if len(m.txDurations) > m.maxDurationSamples {
+		// Remove oldest 10% when limit is reached
+		removeCount := m.maxDurationSamples / 10
+		m.txDurations = m.txDurations[removeCount:]
+	}
 
 	if committed {
 		m.txCommitCount++
@@ -322,20 +381,42 @@ func calculateAverage(durations []time.Duration) time.Duration {
 	return total / time.Duration(len(durations))
 }
 
-// calculatePercentile calculates the percentile duration.
+// calculatePercentile calculates the percentile duration using the nearest-rank method.
 func calculatePercentile(durations []time.Duration, percentile float64) time.Duration {
 	if len(durations) == 0 {
 		return 0
 	}
 
-	// Simple percentile calculation without sorting
-	// For a more accurate percentile, consider using a proper statistics library
-	index := int(float64(len(durations)) * percentile)
-	if index >= len(durations) {
-		index = len(durations) - 1
+	// Create a sorted copy to avoid modifying the original slice
+	sorted := make([]time.Duration, len(durations))
+	copy(sorted, durations)
+
+	// Sort the durations
+	sortDurations(sorted)
+
+	// Calculate index using nearest-rank method
+	index := int(float64(len(sorted)) * percentile)
+	if index >= len(sorted) {
+		index = len(sorted) - 1
 	}
 
-	return durations[index]
+	return sorted[index]
+}
+
+// sortDurations sorts a slice of durations in ascending order using insertion sort.
+// Insertion sort is efficient for small arrays and maintains stability.
+func sortDurations(durations []time.Duration) {
+	for i := 1; i < len(durations); i++ {
+		key := durations[i]
+		j := i - 1
+
+		// Move elements greater than key one position ahead
+		for j >= 0 && durations[j] > key {
+			durations[j+1] = durations[j]
+			j--
+		}
+		durations[j+1] = key
+	}
 }
 
 // CompositeMetricsCollector combines multiple metrics collectors.
