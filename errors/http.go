@@ -2,7 +2,6 @@ package errors
 
 import "encoding/json"
 
-// HTTPError represents an error response for HTTP APIs
 type HTTPError struct {
 	Code       string         `json:"code"`
 	Message    string         `json:"message"`
@@ -10,7 +9,6 @@ type HTTPError struct {
 	StackTrace []string       `json:"stack_trace,omitempty"`
 }
 
-// ToHTTPError converts an error to HTTPError
 func ToHTTPError(err error, includeStackTrace bool) HTTPError {
 	if err == nil {
 		return HTTPError{
@@ -44,7 +42,6 @@ func ToHTTPError(err error, includeStackTrace bool) HTTPError {
 	}
 }
 
-// ToJSON converts HTTPError to JSON string
 func (e HTTPError) ToJSON() (string, error) {
 	bytes, err := json.Marshal(e)
 	if err != nil {
@@ -53,7 +50,6 @@ func (e HTTPError) ToJSON() (string, error) {
 	return string(bytes), nil
 }
 
-// HTTPStatusCode returns the HTTP status code for an error
 func HTTPStatusCode(err error) int {
 	if err == nil {
 		return 200
@@ -67,13 +63,11 @@ func HTTPStatusCode(err error) int {
 	return 500
 }
 
-// HTTPResponse represents a complete HTTP error response
 type HTTPResponse struct {
 	StatusCode int       `json:"-"`
 	Error      HTTPError `json:"error"`
 }
 
-// ToHTTPResponse converts an error to HTTPResponse
 func ToHTTPResponse(err error, includeStackTrace bool) HTTPResponse {
 	httpErr := ToHTTPError(err, includeStackTrace)
 	statusCode := HTTPStatusCode(err)
@@ -84,7 +78,6 @@ func ToHTTPResponse(err error, includeStackTrace bool) HTTPResponse {
 	}
 }
 
-// WriteJSON writes the HTTP response as JSON
 func (r HTTPResponse) WriteJSON() (string, error) {
 	bytes, err := json.Marshal(r)
 	if err != nil {
