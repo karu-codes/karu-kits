@@ -5,15 +5,11 @@ import (
 	"os"
 )
 
-// Format describes the serialization format used by the config file.
 type Format string
 
 const (
-	// FormatAuto automatically detects the format based on the file extension.
 	FormatAuto Format = ""
-	// FormatYAML parses YAML documents (.yaml/.yml).
 	FormatYAML Format = "yaml"
-	// FormatJSON parses JSON documents (.json).
 	FormatJSON Format = "json"
 )
 
@@ -36,17 +32,14 @@ func defaultOptions() options {
 	}
 }
 
-// Option configures Load behaviour.
 type Option func(*options)
 
-// WithEnv controls whether environment overrides are applied (enabled by default).
 func WithEnv(enabled bool) Option {
 	return func(o *options) {
 		o.envEnabled = enabled
 	}
 }
 
-// WithoutEnv disables environment overrides entirely.
 func WithoutEnv() Option {
 	return WithEnv(false)
 }
@@ -59,7 +52,6 @@ func WithEnvPrefix(prefix string) Option {
 	}
 }
 
-// WithEnvLookup injects a custom environment lookup function. Useful for tests.
 func WithEnvLookup(fn func(string) (string, bool)) Option {
 	return func(o *options) {
 		if fn != nil {
@@ -68,8 +60,6 @@ func WithEnvLookup(fn func(string) (string, bool)) Option {
 	}
 }
 
-// WithFileSystem loads the config file from the provided filesystem instead of
-// the host OS. Paths are interpreted relative to the filesystem root.
 func WithFileSystem(fsys fs.FS) Option {
 	return func(o *options) {
 		if fsys == nil {
