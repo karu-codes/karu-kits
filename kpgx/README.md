@@ -48,14 +48,27 @@ func main() {
 
 ### Transaction Management
 
+
+
 `kpgx` allows you to run a function within a transaction. If a transaction is already present in the context, it will be reused.
 
+#### ExecTx (No Result)
+
 ```go
-err := db.RunInTx(ctx, func(ctx context.Context) error {
+err := kpgx.ExecTx(ctx, db, func(ctx context.Context) error {
     // Perform database operations here using ctx
     // If this function returns an error, the transaction will be rolled back.
     // If it returns nil, the transaction will be committed.
     return nil
+})
+```
+
+#### ExecTxWithResult (With Result)
+
+```go
+user, err := kpgx.ExecTxWithResult(ctx, db, func(ctx context.Context) (*User, error) {
+    // Perform operations and return a result
+    return &User{Name: "John"}, nil
 })
 ```
 
@@ -73,21 +86,32 @@ type Service struct {
 }
 
 func (s *Service) CreateUser(ctx context.Context, name string) error {
-	return s.db.RunInTx(ctx, func(ctx context.Context) error {
+	return kpgx.ExecTx(ctx, s.db, func(ctx context.Context) error {
 		// Get the DBTX (either Tx or Pool) from context
 		dbtx := s.db.GetDBTX(ctx)
 		
 		// Use the queries with the correct DBTX
-		q := s.queries.WithTx(dbtx) // Or however your sqlc generated code handles it, often just passing dbtx to New() or methods
+		q := s.queries.WithTx(dbtx) 
         
-        // If using standard sqlc "New(dbtx)":
-        // repo := repository.New(dbtx)
-        // return repo.CreateUser(ctx, name)
-        
+        // ...
         return nil
 	})
 }
 ```
+
+### Helpers
+
+`kpgx` provides convenient helpers to convert Go types to `pgtype` types, handling pointers and zero values gracefully.
+
+- `ToUUID(uuid.UUID) pgtype.UUID` / `ToUUIDPtr(*uuid.UUID) pgtype.UUID`
+- `ToTimestamp(time.Time) pgtype.Timestamp` / `ToTimestampPtr(*time.Time) pgtype.Timestamp`
+- `ToTimestamptz(time.Time) pgtype.Timestamptz` / `ToTimestamptzPtr(*time.Time) pgtype.Timestamptz`
+- `ToDate(time.Time) pgtype.Date` / `ToDatePtr(*time.Time) pgtype.Date`
+- `ToText(string) pgtype.Text` / `ToTextPtr(*string) pgtype.Text`
+- `ToInt4(int32) pgtype.Int4` / `ToInt4Ptr(*int32) pgtype.Int4`
+- `ToInt8(int64) pgtype.Int8` / `ToInt8Ptr(*int64) pgtype.Int8`
+- `ToBool(bool) pgtype.Bool` / `ToBoolPtr(*bool) pgtype.Bool`
+- `ToFloat8(float64) pgtype.Float8` / `ToFloat8Ptr(*float64) pgtype.Float8`
 
 **Note on sqlc generation:**
 Ensure your `sqlc` configuration generates the `DBTX` interface or you use the standard one that `pgx` satisfies. `kpgx.DBTX` is compatible with standard `pgx` interfaces.

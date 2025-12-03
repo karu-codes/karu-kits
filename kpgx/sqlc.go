@@ -14,14 +14,3 @@ type DBTX interface {
 	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
 	QueryRow(context.Context, string, ...interface{}) pgx.Row
 }
-
-// GetDBTX returns the transaction from the context if present,
-// otherwise it returns the underlying pool from the DB.
-// This allows sqlc queries to automatically participate in transactions
-// if they are running within a RunInTx block.
-func (db *DB) GetDBTX(ctx context.Context) DBTX {
-	if tx, ok := TxFromContext(ctx); ok {
-		return tx
-	}
-	return db.pool
-}
