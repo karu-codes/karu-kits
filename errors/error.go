@@ -138,6 +138,10 @@ func GetCode(err error) Code {
 	return CodeInternal
 }
 
+func IsCode(err error, code Code) bool {
+	return HasCode(err, code)
+}
+
 func GetDetails(err error) map[string]any {
 	var customErr *Error
 	if errors.As(err, &customErr) {
