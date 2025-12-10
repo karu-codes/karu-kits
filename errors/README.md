@@ -66,6 +66,12 @@ Error codes are typed as `Code` (string). They determine how an error maps to tr
 
 ### 4.1 Creating Errors
 
+**`NewError(code Code, message string) *Error`**
+Creates a new error *without* capturing a stack trace. Use `WithStackTrace()` to add it later if needed. This is useful for lightweight errors or sentinel errors where stack traces are unnecessary overhead.
+```go
+err := errors.NewError(errors.CodeNotFound, "user not found")
+```
+
 **`New(code Code, message string) *Error`**
 Creates a new error with a stack trace.
 ```go
@@ -76,6 +82,12 @@ err := errors.New(errors.CodeNotFound, "user not found")
 Creates a new error with formatted message and stack trace.
 ```go
 err := errors.Newf(errors.CodeInternal, "failed to connect: %s", host)
+```
+
+**`NewSentinel(code Code, message string) *Error`**
+Creates a new error *without* a stack trace. Alias to `NewError` for semantic clarity when defining package-level sentinel errors (e.g., `ErrNotFound`).
+```go
+var ErrNotFound = errors.NewSentinel(errors.CodeNotFound, "resource not found")
 ```
 
 ### 4.2 Wrapping Errors
@@ -105,6 +117,17 @@ Adds structured metadata to the error. This is useful for passing field validati
 return errors.New(errors.CodeInvalidArgument, "validation error").
     WithDetail("field", "email").
     WithDetail("reason", "missing_at_symbol")
+```
+
+**`WithStackTrace() *Error`**
+Captures a stack trace if one hasn't been captured yet. Returns the error for chaining. Useful when creating errors with `NewError` or `NewSentinel` and later needing a stack trace.
+```go
+var ErrNotFound = errors.NewSentinel(errors.CodeNotFound, "resource not found")
+
+func FindUser(id string) error {
+    // Capture stack trace at usage site
+    return ErrNotFound.WithStackTrace().WithDetail("user_id", id)
+}
 ```
 
 ### 4.4 Inspecting Errors

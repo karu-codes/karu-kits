@@ -47,11 +47,38 @@ func (e *Error) WithDetail(key string, value any) *Error {
 	return e
 }
 
+// WithStackTrace captures a stack trace if one hasn't been captured yet.
+// Returns the error for chaining.
+func (e *Error) WithStackTrace() *Error {
+	if len(e.StackTrace) == 0 {
+		e.StackTrace = captureStackTrace(1)
+	}
+	return e
+}
+
+// NewError creates a new error without capturing a stack trace.
+// Use WithStackTrace() to capture it later if needed.
+// This is useful for sentinel errors or scenarios where stack traces are unnecessary.
+func NewError(code Code, message string) *Error {
+	return &Error{
+		Code:    code,
+		Message: message,
+		Details: make(map[string]any),
+	}
+}
+
+// NewSentinel creates a new error without a stack trace.
+// Alias to NewError for semantic clarity when defining package-level sentinel errors.
+func NewSentinel(code Code, message string) *Error {
+	return NewError(code, message)
+}
+
+// New creates a new error with a stack trace.
 func New(code Code, message string) *Error {
 	return &Error{
 		Code:       code,
 		Message:    message,
-		StackTrace: captureStackTrace(),
+		StackTrace: captureStackTrace(1),
 		Details:    make(map[string]any),
 	}
 }
@@ -60,7 +87,7 @@ func Newf(code Code, format string, args ...any) *Error {
 	return &Error{
 		Code:       code,
 		Message:    fmt.Sprintf(format, args...),
-		StackTrace: captureStackTrace(),
+		StackTrace: captureStackTrace(1),
 		Details:    make(map[string]any),
 	}
 }
@@ -77,11 +104,19 @@ func Wrap(err error, code Code, message string) *Error {
 			details[k] = v
 		}
 
+		// Use original stack trace if available.
+		// If we wanted to "refresh" stack traces from init(), we'd need logic here.
+		// But for now, we trust the original stack trace or capture new if missing.
+		stackTrace := originalErr.StackTrace
+		if len(stackTrace) == 0 {
+			stackTrace = captureStackTrace(1)
+		}
+
 		return &Error{
 			Code:       code,
 			Message:    message,
 			Cause:      err,
-			StackTrace: originalErr.StackTrace,
+			StackTrace: stackTrace,
 			Details:    details,
 		}
 	}
@@ -90,7 +125,7 @@ func Wrap(err error, code Code, message string) *Error {
 		Code:       code,
 		Message:    message,
 		Cause:      err,
-		StackTrace: captureStackTrace(),
+		StackTrace: captureStackTrace(1),
 		Details:    make(map[string]any),
 	}
 }
@@ -150,10 +185,14 @@ func GetDetails(err error) map[string]any {
 	return nil
 }
 
-func captureStackTrace() []StackFrame {
+// captureStackTrace captures the current call stack.
+// skip indicates how many stack frames to skip (0 = captureStackTrace itself, 1 = caller, etc.)
+func captureStackTrace(skip int) []StackFrame {
 	const maxDepth = 32
 	var pcs [maxDepth]uintptr
-	n := runtime.Callers(3, pcs[:])
+	// runtime.Callers skip: 0 = Callers itself, 1 = captureStackTrace, 2 = caller of captureStackTrace
+	// We add 2 to skip to account for runtime.Callers and captureStackTrace itself
+	n := runtime.Callers(2+skip, pcs[:])
 
 	frames := make([]StackFrame, 0, n)
 	for i := 0; i < n; i++ {

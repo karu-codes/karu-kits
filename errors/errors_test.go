@@ -118,3 +118,126 @@ func TestToCMDErrorWithStack(t *testing.T) {
 		t.Error("should contain stack trace header")
 	}
 }
+
+func TestNewError(t *testing.T) {
+	err := NewError(CodeNotFound, "resource not found")
+
+	if err.Code != CodeNotFound {
+		t.Errorf("expected code %s, got %s", CodeNotFound, err.Code)
+	}
+	if err.Message != "resource not found" {
+		t.Errorf("expected message 'resource not found', got '%s'", err.Message)
+	}
+	if len(err.StackTrace) != 0 {
+		t.Error("NewError should not capture stack trace")
+	}
+	if err.Details == nil {
+		t.Error("Details should be initialized")
+	}
+}
+
+func TestNewSentinel(t *testing.T) {
+	err := NewSentinel(CodeNotFound, "sentinel error")
+
+	if err.Code != CodeNotFound {
+		t.Errorf("expected code %s, got %s", CodeNotFound, err.Code)
+	}
+	if err.Message != "sentinel error" {
+		t.Errorf("expected message 'sentinel error', got '%s'", err.Message)
+	}
+	if len(err.StackTrace) != 0 {
+		t.Error("NewSentinel should not capture stack trace")
+	}
+}
+
+func TestWithStackTrace(t *testing.T) {
+	// Create error without stack trace
+	err := NewError(CodeInternal, "test error")
+	if len(err.StackTrace) != 0 {
+		t.Error("NewError should not have stack trace initially")
+	}
+
+	// Add stack trace
+	err.WithStackTrace()
+	if len(err.StackTrace) == 0 {
+		t.Error("WithStackTrace should capture stack trace")
+	}
+
+	// Verify it contains this test function
+	found := false
+	for _, frame := range err.StackTrace {
+		if strings.Contains(frame.Function, "TestWithStackTrace") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Stack trace should contain TestWithStackTrace function")
+	}
+
+	// Call WithStackTrace again - should not re-capture
+	originalLen := len(err.StackTrace)
+	err.WithStackTrace()
+	if len(err.StackTrace) != originalLen {
+		t.Error("WithStackTrace should not re-capture if stack trace already exists")
+	}
+}
+
+func TestNewHasStackTrace(t *testing.T) {
+	err := New(CodeInternal, "test")
+	if len(err.StackTrace) == 0 {
+		t.Error("New should capture stack trace")
+	}
+
+	// Verify stack trace contains this test function
+	found := false
+	for _, frame := range err.StackTrace {
+		if strings.Contains(frame.Function, "TestNewHasStackTrace") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Stack trace should contain TestNewHasStackTrace function")
+	}
+}
+
+func TestNewfHasStackTrace(t *testing.T) {
+	err := Newf(CodeInternal, "test %d", 123)
+	if len(err.StackTrace) == 0 {
+		t.Error("Newf should capture stack trace")
+	}
+
+	// Verify stack trace contains this test function
+	found := false
+	for _, frame := range err.StackTrace {
+		if strings.Contains(frame.Function, "TestNewfHasStackTrace") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Stack trace should contain TestNewfHasStackTrace function")
+	}
+}
+
+func TestWrapWithStackTraceDepth(t *testing.T) {
+	baseErr := errors.New("base error")
+	err := Wrap(baseErr, CodeDatabase, "wrapped")
+
+	if len(err.StackTrace) == 0 {
+		t.Error("Wrap should capture stack trace for standard errors")
+	}
+
+	// Verify stack trace contains this test function
+	found := false
+	for _, frame := range err.StackTrace {
+		if strings.Contains(frame.Function, "TestWrapWithStackTraceDepth") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Stack trace should contain TestWrapWithStackTraceDepth function")
+	}
+}
